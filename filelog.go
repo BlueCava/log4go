@@ -34,6 +34,11 @@ type FileLogWriter struct {
 	// Rotate daily
 	daily          bool
 	daily_opendate int
+	
+	// Rotate at TTL 
+	ttlInMins      	int
+	ttlTimer		*time.Timer
+	ttlChannel		<-chan time.Time
 
 	// Keep old logfiles (.001, .002, etc)
 	rotate    bool
@@ -67,6 +72,7 @@ func NewFileLogWriter(fname string, rotate bool) *FileLogWriter {
 		format:    "[%D %T] [%L] (%S) %M",
 		rotate:    rotate,
 		maxbackup: 999,
+		ttlChannel: nil,
 	}
 
 	// open the file for the first time
@@ -85,6 +91,11 @@ func NewFileLogWriter(fname string, rotate bool) *FileLogWriter {
 
 		for {
 			select {
+			case <-w.ttlChannel:
+				if err := w.intRotate(); err != nil {
+					fmt.Fprintf(os.Stderr, "FileLogWriter(%q): %s\n", w.filename, err)
+					return
+				}
 			case <-w.rot:
 				if err := w.intRotate(); err != nil {
 					fmt.Fprintf(os.Stderr, "FileLogWriter(%q): %s\n", w.filename, err)
@@ -114,6 +125,10 @@ func NewFileLogWriter(fname string, rotate bool) *FileLogWriter {
 				// Update the counts
 				w.maxlines_curlines++
 				w.maxsize_cursize += n
+				if w.ttlInMins > 0 && w.ttlTimer == nil {
+					w.ttlTimer = time.NewTimer(time.Minute * time.Duration(w.ttlInMins))
+					w.ttlChannel = w.ttlTimer.C
+				}
 			}
 		}
 	}()
@@ -189,6 +204,11 @@ func (w *FileLogWriter) intRotate() error {
 	// initialize rotation values
 	w.maxlines_curlines = 0
 	w.maxsize_cursize = 0
+	if w.ttlTimer != nil {
+		w.ttlTimer.Stop()
+		w.ttlTimer = nil
+		w.ttlChannel = nil
+	}	
 
 	return nil
 }
@@ -232,6 +252,13 @@ func (w *FileLogWriter) SetRotateSize(maxsize int) *FileLogWriter {
 func (w *FileLogWriter) SetRotateDaily(daily bool) *FileLogWriter {
 	//fmt.Fprintf(os.Stderr, "FileLogWriter.SetRotateDaily: %v\n", daily)
 	w.daily = daily
+	return w
+}
+
+// Set rotate Ttl (chainable). Must be called before the first log message is
+// written.
+func (w *FileLogWriter) SetRotateTtl(ttlInMins int) *FileLogWriter {
+	w.ttlInMins = ttlInMins
 	return w
 }
 
